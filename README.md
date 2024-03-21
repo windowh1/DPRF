@@ -1,5 +1,4 @@
-# Knowledge Distillation
-### SPAR to DPR
+## Knowledge Distillation: SPAR to DPR
 train_spar.py 파일명 train_kd.py로 바꿨습니다!
 
 ## Running train_kd.py
