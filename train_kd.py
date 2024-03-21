@@ -116,21 +116,22 @@ class SparEncoder(nn.Module):
             doc_token_type_ids, # [bs*n_doc,seq_len]
     ):
         with torch.no_grad():
+            CLS_POS = 0
             dpr_query_emb = self.dpr_query_encoder(input_ids=query_input_ids,
                                                 attention_mask=query_attention_mask, 
-                                                token_type_ids=query_token_type_ids).last_hidden_state[:,0,:]
+                                                token_type_ids=query_token_type_ids).last_hidden_state[:,CLS_POS,:]
                 # [batch_size, hidden_size] = [16, 768]
             dpr_doc_emb = self.dpr_doc_encoder(input_ids=doc_input_ids, 
                                                 attention_mask=doc_attention_mask, 
-                                                token_type_ids=doc_token_type_ids).last_hidden_state[:,0,:]
+                                                token_type_ids=doc_token_type_ids).last_hidden_state[:,CLS_POS,:]
                 # [batch_size, hidden_size] = [32, 768]      
             lex_query_emb = self.lex_query_encoder(input_ids=query_input_ids,
                                                 attention_mask=query_attention_mask, 
-                                                token_type_ids=query_token_type_ids).last_hidden_state[:,0,:]
+                                                token_type_ids=query_token_type_ids).last_hidden_state[:,CLS_POS,:]
                 # [batch_size, hidden_size] = [16, 768]
             lex_doc_emb = self.lex_doc_encoder(input_ids=doc_input_ids, 
                                                 attention_mask=doc_attention_mask, 
-                                                token_type_ids=doc_token_type_ids).last_hidden_state[:,0,:]
+                                                token_type_ids=doc_token_type_ids).last_hidden_state[:,CLS_POS,:]
                 # [batch_size, hidden_size] = [32, 768]      
         return dpr_query_emb, dpr_doc_emb, lex_query_emb, lex_doc_emb
 
