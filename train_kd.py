@@ -177,17 +177,10 @@ class QADataset(torch.utils.data.Dataset):
         positive_titles = [x['title'] for x in positive_passages]
         positive_docs = [x['text'] for x in positive_passages]
 
-        if stage == 'train':
-            ## random choose one negative document
-            negative_passages = [random.choice(x['hard_negative_ctxs']) 
-                                 if len(x['hard_negative_ctxs']) != 0  
-                                 else random.choice(x['negative_ctxs']) 
-                                 for x in samples ]
-        elif stage == 'dev':
-            negative_passages = [x['hard_negative_ctxs'][:min(args.num_hard_negative_ctx,len(x['hard_negative_ctxs']))]
-                                + x['negative_ctxs'][:min(args.num_other_negative_ctx,len(x['negative_ctxs']))] 
-                                for x in samples]
-            negative_passages = [x for y in negative_passages for x in y]
+        negative_passages = [random.choice(x['hard_negative_ctxs']) 
+                                if len(x['hard_negative_ctxs']) != 0  
+                                else random.choice(x['negative_ctxs']) 
+                                for x in samples ]
 
         negative_titles = [x["title"] for x in negative_passages]
         negative_docs = [x["text"] for x in negative_passages]
@@ -213,7 +206,7 @@ def validate(model, dataloader, accelerator):
     negative_doc_embeddings = []
     for batch in dataloader:
         with torch.no_grad():
-            query_embedding,doc_embedding  = model(**batch)
+            query_embedding,doc_embedding = model(**batch)
         query_num,_ = query_embedding.shape
         query_embeddings.append(query_embedding.cpu())
         positive_doc_embeddings.append(doc_embedding[:query_num,:].cpu())
@@ -242,14 +235,15 @@ def main():
     set_seed(args.seed)
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(
+        device_placement=True,
+        mixed_precision='fp16',
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         log_with='wandb',
-        mixed_precision='no',
         kwargs_handlers=[kwargs]
     )
 
     accelerator.init_trackers(
-        project_name="dpr", 
+        project_name="Knowledge Distillation", 
         config=args,
     )
     if accelerator.is_local_main_process:
@@ -272,12 +266,28 @@ def main():
     spar_encoder.eval()
 
     train_dataset = QADataset(args.train_file)
-    train_collate_fn = functools.partial(QADataset.collate_fn,tokenizer=tokenizer,stage='train',args=args,)
-    train_dataloader = torch.utils.data.DataLoader(train_dataset,batch_size=args.per_device_train_batch_size,shuffle=True,collate_fn=train_collate_fn,num_workers=4,pin_memory=True)
+    train_collate_fn = functools.partial(QADataset.collate_fn,
+                                         tokenizer=tokenizer,
+                                         stage='train',
+                                         args=args,)
+    train_dataloader = torch.utils.data.DataLoader(train_dataset,
+                                                   batch_size=args.per_device_train_batch_size,
+                                                   shuffle=True,
+                                                   collate_fn=train_collate_fn,
+                                                   num_workers=args.num_workers,
+                                                   pin_memory=True,)
     
     dev_dataset = QADataset(args.dev_file)
-    dev_collate_fn = functools.partial(QADataset.collate_fn,tokenizer=tokenizer,stage='dev',args=args,)
-    dev_dataloader = torch.utils.data.DataLoader(dev_dataset,batch_size=args.per_device_eval_batch_size,shuffle=False,collate_fn=dev_collate_fn,num_workers=4,pin_memory=True)
+    dev_collate_fn = functools.partial(QADataset.collate_fn,
+                                       tokenizer=tokenizer,
+                                       stage='dev',
+                                       args=args,)
+    dev_dataloader = torch.utils.data.DataLoader(dev_dataset,
+                                                 batch_size=args.per_device_eval_batch_size,
+                                                 shuffle=False,
+                                                 collate_fn=dev_collate_fn,
+                                                 num_workers=args.num_workers,
+                                                 pin_memory=True,)
     
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
@@ -293,25 +303,27 @@ def main():
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters,lr=args.lr, eps=args.adam_eps)
     
     dual_encoder, spar_encoder, optimizer, train_dataloader, dev_dataloader = accelerator.prepare(
-        dual_encoder, spar_encoder, optimizer, train_dataloader, dev_dataloader,
-    )
+        dual_encoder, spar_encoder, optimizer, train_dataloader, dev_dataloader,)
+        # prepare all objects for distributed training and mixed precision
     
-    NUM_UPDATES_PER_EPOCH = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    MAX_TRAIN_STEPS = NUM_UPDATES_PER_EPOCH * args.max_train_epochs
-    MAX_TRAIN_EPOCHS = math.ceil(MAX_TRAIN_STEPS / NUM_UPDATES_PER_EPOCH)
-    TOTAL_TRAIN_BATCH_SIZE = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
-    EVAL_STEPS = args.val_check_interval if isinstance(args.val_check_interval,int) else int(args.val_check_interval * NUM_UPDATES_PER_EPOCH)
+    NUM_UPDATES_PER_EPOCH = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps) # 920 / 1 = 920 = 58880 / 128
+        # i.e., len(train_dataset) = 58880를 batch_size = 32 * 4 = 128 로 돌면 한 epoch 당 460개의 batch가 있는데, 매 batch마다 gradient update 
+    MAX_TRAIN_STEPS = NUM_UPDATES_PER_EPOCH * args.max_train_epochs # 460 * 40 = 18400: # of total batch (total epoch)
+    MAX_TRAIN_EPOCHS = math.ceil(MAX_TRAIN_STEPS / NUM_UPDATES_PER_EPOCH) # 40
+    TOTAL_TRAIN_BATCH_SIZE = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps # 32 * 4 * 1 = 128
+    EVAL_STEPS = args.val_check_interval if isinstance(args.val_check_interval,int) else int(args.val_check_interval * NUM_UPDATES_PER_EPOCH) # 1
+        # i.e., gradient update 시마다 eval
     lr_scheduler = get_linear_scheduler(optimizer,warmup_steps=args.warmup_steps,total_training_steps=MAX_TRAIN_STEPS)
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num train examples = {len(train_dataset)}")
-    logger.info(f"  Num dev examples = {len(dev_dataset)}")
-    logger.info(f"  Num Epochs = {MAX_TRAIN_EPOCHS}")
-    logger.info(f"  Per device train batch size = {args.per_device_train_batch_size}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {TOTAL_TRAIN_BATCH_SIZE}")
-    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {MAX_TRAIN_STEPS}")
-    logger.info(f"  Per device eval batch size = {args.per_device_eval_batch_size}")
+    logger.info(f"  Num train examples = {len(train_dataset)}") # 58880
+    logger.info(f"  Num dev examples = {len(dev_dataset)}") # 6515
+    logger.info(f"  Num Epochs = {MAX_TRAIN_EPOCHS}") # 40
+    logger.info(f"  Per device train batch size = {args.per_device_train_batch_size}") # 32
+    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {TOTAL_TRAIN_BATCH_SIZE}") # 128
+    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}") # 1
+    logger.info(f"  Total optimization steps = {MAX_TRAIN_STEPS}") # 18400
+    logger.info(f"  Per device eval batch size = {args.per_device_eval_batch_size}") # 32
     completed_steps = 0
     progress_bar = tqdm(range(MAX_TRAIN_STEPS), disable=not accelerator.is_local_main_process,ncols=100)
 
@@ -319,16 +331,16 @@ def main():
         set_seed(args.seed+epoch)
         progress_bar.set_description(f"epoch: {epoch+1}/{MAX_TRAIN_EPOCHS}")
         for step,batch in enumerate(train_dataloader):
-            with accelerator.accumulate(dual_encoder):
-                with accelerator.autocast():
+            with accelerator.accumulate(dual_encoder): # synchronize gradient only when the optimizer.step() is called to avoid overhead
+                with accelerator.autocast(): # automatic mixed precision
                     query_embedding,doc_embedding  = dual_encoder(**batch)
                     dpr_query_embedding, dpr_doc_embedding, lex_query_embedding, lex_doc_embedding = spar_encoder(**batch)
         
                     single_device_query_num,_ = query_embedding.shape
                     single_device_doc_num,_ = doc_embedding.shape
                     if accelerator.use_distributed:
-                        query_list = [torch.zeros_like(query_embedding) for _ in range(accelerator.num_processes)]
-                        dist.all_gather(tensor_list=query_list, tensor=query_embedding.contiguous())
+                        query_list = [torch.zeros_like(query_embedding) for _ in range(accelerator.num_processes)] # accelerator.num_processes = # of gpus
+                        dist.all_gather(tensor_list=query_list, tensor=query_embedding.contiguous()) # 모든 프로세스에서 tensor를 수집해 query_list에 저장
                         query_list[dist.get_rank()] = query_embedding
                         query_embedding = torch.cat(query_list, dim=0)
 
@@ -380,9 +392,9 @@ def main():
                         avg_rank,loss = validate(dual_encoder,dev_dataloader,accelerator)
                         dual_encoder.train()
                         accelerator.log({"avg_rank": avg_rank, "loss":loss}, step=completed_steps)
-                        accelerator.wait_for_everyone()
-                        if accelerator.is_local_main_process:
-                            unwrapped_model = accelerator.unwrap_model(dual_encoder)
+                        accelerator.wait_for_everyone() # 모든 process가 이 지점에 도달할 때까지 대기
+                        if accelerator.is_local_main_process: # main process인 경우에만 모델 저장 (여러 process가 실행되지만 모델 저장은 한 번만 필요)
+                            unwrapped_model = accelerator.unwrap_model(dual_encoder) # 모델 저장을 위한 전처리
                             unwrapped_model.query_encoder.save_pretrained(os.path.join(LOG_DIR,f"step-{completed_steps}/query_encoder"))
                             tokenizer.save_pretrained(os.path.join(LOG_DIR,f"step-{completed_steps}/query_encoder"))
                             
@@ -391,7 +403,7 @@ def main():
 
                         accelerator.wait_for_everyone()
                 
-                optimizer.step()
+                optimizer.step() # gradient update
                 optimizer.zero_grad()
     
     if accelerator.is_local_main_process:wandb_tracker.finish()
