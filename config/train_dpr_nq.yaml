@@ -5,6 +5,7 @@ dev_file: downloads/data/retriever/nq-dev.json
 
 ## training
 base_model: bert-base-uncased
+num_workers: 8
 per_device_train_batch_size: 32
 per_device_eval_batch_size: 32
 adam_eps: 1.0e-8
@@ -16,4 +17,3 @@ max_train_epochs: 40
 seed: 26
 gradient_accumulation_steps: 1
 val_check_interval: 1.0
-num_workers: 8
