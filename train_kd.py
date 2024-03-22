@@ -84,13 +84,10 @@ def calculate_dpr_loss(matching_score,labels):
     return F.nll_loss(input=F.log_softmax(matching_score,dim=1),target=labels)
 
 def calculate_kd_loss(matching_score, large_score, labels, temperature=5.0):
-    print("large_score.requires_grad?", large_score.requires_grad)
     soft_prob = F.log_softmax(matching_score / temperature, dim=1)
     soft_tgt = F.log_softmax(large_score / temperature, dim=1)
-    print("soft_prob.shape", soft_prob.shape)
-    print("soft_tgt.shape", soft_tgt.shape)
     
-    soft_loss = nn.KLDivLoss(log_target=True)(soft_prob, soft_tgt)
+    soft_loss = nn.KLDivLoss(reduction='batchmean',log_target=True)(soft_prob, soft_tgt)
 
     orig_prob = F.log_softmax(matching_score, dim=1)
     orig_loss = F.nll_loss(input=orig_prob, target=labels)
@@ -119,11 +116,11 @@ class SparEncoder(nn.Module):
             CLS_POS = 0
             dpr_query_emb = self.dpr_query_encoder(input_ids=query_input_ids,
                                                 attention_mask=query_attention_mask, 
-                                                token_type_ids=query_token_type_ids).last_hidden_state[:,CLS_POS,:]
+                                                token_type_ids=query_token_type_ids).pooler_output
                 # [batch_size, hidden_size] = [16, 768]
             dpr_doc_emb = self.dpr_doc_encoder(input_ids=doc_input_ids, 
                                                 attention_mask=doc_attention_mask, 
-                                                token_type_ids=doc_token_type_ids).last_hidden_state[:,CLS_POS,:]
+                                                token_type_ids=doc_token_type_ids).pooler_output
                 # [batch_size, hidden_size] = [32, 768]      
             lex_query_emb = self.lex_query_encoder(input_ids=query_input_ids,
                                                 attention_mask=query_attention_mask, 
@@ -325,10 +322,6 @@ def main():
             with accelerator.accumulate(dual_encoder):
                 with accelerator.autocast():
                     query_embedding,doc_embedding  = dual_encoder(**batch)
-                    print("dual_encoder.device", dual_encoder.device)
-                    print("query_embedding.device", query_embedding.device)
-                    print("doc_embedding.device", doc_embedding.device)
-                    print()
                     dpr_query_embedding, dpr_doc_embedding, lex_query_embedding, lex_doc_embedding = spar_encoder(**batch)
         
                     single_device_query_num,_ = query_embedding.shape
