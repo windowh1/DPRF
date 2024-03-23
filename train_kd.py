@@ -162,7 +162,7 @@ class QADataset(torch.utils.data.Dataset):
         return self.data[idx]
 
     @staticmethod
-    def collate_fn(samples,tokenizer,args,stage):
+    def collate_fn(samples,tokenizer,args):
         
         # prepare query input
         queries = [normalize_query(x['question']) for x in samples]
@@ -245,7 +245,7 @@ def validate(model, teacher_model, dataloader, accelerator, temperature):
     kd_loss = calculate_kd_loss(matching_score, large_score, labels=labels, temperature=temperature)
     
     if accelerator.use_distributed and accelerator.num_processes>1:
-        ranks_from_all_gpus = [None for _ in range(accelerator.num_processes)] 
+        ranks_from_all_gpus = [None for _ in range(accelerator.num_processes)]
         dist.all_gather_object(ranks_from_all_gpus,ranks)
         ranks = [x for y in ranks_from_all_gpus for x in y]
 
@@ -305,7 +305,6 @@ def train(config=None):
     train_dataset = QADataset(args.train_file)
     train_collate_fn = functools.partial(QADataset.collate_fn,
                                          tokenizer=tokenizer,
-                                         stage='train',
                                          args=args,)
     train_dataloader = torch.utils.data.DataLoader(train_dataset,
                                                    batch_size=args.per_device_train_batch_size,
@@ -317,7 +316,6 @@ def train(config=None):
     dev_dataset = QADataset(args.dev_file)
     dev_collate_fn = functools.partial(QADataset.collate_fn,
                                        tokenizer=tokenizer,
-                                       stage='dev',
                                        args=args,)
     dev_dataloader = torch.utils.data.DataLoader(dev_dataset,
                                                  batch_size=args.per_device_eval_batch_size,
