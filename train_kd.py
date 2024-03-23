@@ -1,5 +1,5 @@
 ## built-in
-import math,logging,json,random,functools,os
+import math,logging,json,random,functools,os,wandb
 import types
 os.environ["TOKENIZERS_PARALLELISM"]='true'
 os.environ["WANDB_IGNORE_GLOBS"]='*.bin' ## not upload ckpt to wandb cloud
@@ -29,7 +29,6 @@ from utils import (
     set_seed,
     get_linear_scheduler,
     normalize_query,
-    normalize_document,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -80,7 +79,7 @@ class DualEncoder(nn.Module):
         
         return query_embedding,doc_embedding 
 
-def calculate_dpr_loss(matching_score,labels):
+def calculate_orig_loss(matching_score,labels):
     return F.nll_loss(input=F.log_softmax(matching_score,dim=1),target=labels)
 
 def calculate_kd_loss(matching_score, large_score, labels, temperature=5.0):
@@ -152,7 +151,6 @@ def calculate_average_rank(matching_score,labels):
         ranks.append(rank)
     return ranks
 
-
 class QADataset(torch.utils.data.Dataset):
     def __init__(self,file_path):
         self.data = json.load(open(file_path))
@@ -199,38 +197,69 @@ class QADataset(torch.utils.data.Dataset):
             "doc_token_type_ids":doc_inputs.token_type_ids,
         }
 
-def validate(model, dataloader, accelerator):
+def validate(model, teacher_model, dataloader, accelerator, temperature):
     model.eval()
     query_embeddings = []
     positive_doc_embeddings = []
     negative_doc_embeddings = []
+
+    dpr_query_embeddings = []
+    dpr_positive_doc_embeddings = []
+    dpr_negative_doc_embeddings = []
+    
+    lex_query_embeddings = []
+    lex_positive_doc_embeddings = []
+    lex_negative_doc_embeddings = []
+
     for batch in dataloader:
         with torch.no_grad():
             query_embedding,doc_embedding = model(**batch)
+            dpr_query_embedding, dpr_doc_embedding, lex_query_embedding, lex_doc_embedding = teacher_model(**batch)
+        
         query_num,_ = query_embedding.shape
         query_embeddings.append(query_embedding.cpu())
         positive_doc_embeddings.append(doc_embedding[:query_num,:].cpu())
         negative_doc_embeddings.append(doc_embedding[query_num:,:].cpu())
 
+        dpr_query_embeddings.append(dpr_query_embedding.cpu())
+        dpr_positive_doc_embeddings.append(dpr_doc_embedding[:query_num,:].cpu())
+        dpr_negative_doc_embeddings.append(dpr_doc_embedding[query_num:,:].cpu())
+
+        lex_query_embeddings.append(lex_query_embedding.cpu())
+        lex_positive_doc_embeddings.append(lex_doc_embedding[:query_num,:].cpu())
+        lex_negative_doc_embeddings.append(lex_doc_embedding[query_num:,:].cpu())
+
     query_embeddings = torch.cat(query_embeddings,dim=0) # bs, emb_dim
     doc_embeddings = torch.cat(positive_doc_embeddings+negative_doc_embeddings,dim=0)  # num_pos+num_neg, emb_dim
+    dpr_query_embeddings = torch.cat(dpr_query_embeddings,dim=0)
+    dpr_doc_embeddings = torch.cat(dpr_positive_doc_embeddings+dpr_negative_doc_embeddings,dim=0) 
+    lex_query_embeddings = torch.cat(lex_query_embeddings,dim=0)
+    lex_doc_embeddings = torch.cat(lex_positive_doc_embeddings+lex_negative_doc_embeddings,dim=0)
+
     matching_score = torch.matmul(query_embeddings,doc_embeddings.permute(1,0)) # bs, num_pos+num_neg
     labels = torch.arange(query_embeddings.shape[0],dtype=torch.int64).to(matching_score.device) # gold label for each queries
-    loss = calculate_dpr_loss(matching_score,labels=labels).item()
+    large_score = get_large_score(dpr_query_embeddings, dpr_doc_embeddings, lex_query_embeddings, lex_doc_embeddings).to(matching_score.device)
+
+    orig_loss = calculate_orig_loss(matching_score,labels=labels).item()
     ranks = calculate_average_rank(matching_score,labels=labels)
+    kd_loss = calculate_kd_loss(matching_score, large_score, labels=labels, temperature=temperature)
     
     if accelerator.use_distributed and accelerator.num_processes>1:
         ranks_from_all_gpus = [None for _ in range(accelerator.num_processes)] 
         dist.all_gather_object(ranks_from_all_gpus,ranks)
         ranks = [x for y in ranks_from_all_gpus for x in y]
 
-        loss_from_all_gpus = [None for _ in range(accelerator.num_processes)] 
-        dist.all_gather_object(loss_from_all_gpus,loss)
-        loss = sum(loss_from_all_gpus)/len(loss_from_all_gpus)
-    
-    return sum(ranks)/len(ranks),loss
+        orig_loss_from_all_gpus = [None for _ in range(accelerator.num_processes)] 
+        dist.all_gather_object(orig_loss_from_all_gpus,orig_loss)
+        orig_loss = sum(orig_loss_from_all_gpus)/len(orig_loss_from_all_gpus)
 
-def main():
+        kd_loss_from_all_gpus = [None for _ in range(accelerator.num_processes)] 
+        dist.all_gather_object(kd_loss_from_all_gpus,kd_loss)
+        kd_loss = sum(kd_loss_from_all_gpus)/len(kd_loss_from_all_gpus)
+    
+    return sum(ranks)/len(ranks),orig_loss,kd_loss
+
+def train(config=None):
     args = parse_args()
     set_seed(args.seed)
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
@@ -242,10 +271,18 @@ def main():
         kwargs_handlers=[kwargs]
     )
 
+    if accelerator.is_local_main_process:
+        with wandb.init(config=config):
+            args.lr = wandb.config.lr
+            args.weight_decay = wandb.config.weight_decay
+            args.temperature = wandb.config.temperature
+            args.max_train_epochs = wandb.config.max_train_epochs
+
     accelerator.init_trackers(
-        project_name="Knowledge Distillation", 
+        project_name="knowledge-distillation", 
         config=args,
     )
+    
     if accelerator.is_local_main_process:
         wandb_tracker = accelerator.get_tracker("wandb")
         LOG_DIR = wandb_tracker.run.dir
@@ -373,7 +410,7 @@ def main():
                     labels = torch.cat([torch.arange(single_device_query_num) + gpu_index * single_device_doc_num for gpu_index in range(accelerator.num_processes)],dim=0).to(matching_score.device)
                     large_score = get_large_score(dpr_query_embedding, dpr_doc_embedding, lex_query_embedding, lex_doc_embedding).to(matching_score.device)
 
-                    loss = calculate_kd_loss(matching_score, large_score, labels=labels)
+                    loss = calculate_kd_loss(matching_score, large_score, labels=labels, temperature=args.temperature)
 
                 accelerator.backward(loss)
 
@@ -389,9 +426,11 @@ def main():
                     accelerator.log({"lr": lr_scheduler.get_last_lr()[0]}, step=completed_steps)
                     
                     if completed_steps % EVAL_STEPS == 0:
-                        avg_rank,loss = validate(dual_encoder,dev_dataloader,accelerator)
+                        avg_rank,orig_loss,kd_loss = validate(dual_encoder,spar_encoder,dev_dataloader,accelerator, args.temperature)
+
                         dual_encoder.train()
-                        accelerator.log({"avg_rank": avg_rank, "loss":loss}, step=completed_steps)
+                        accelerator.log({"avg_rank": avg_rank, "orig_loss":orig_loss, "kd_loss":kd_loss}, step=completed_steps)
+                        
                         accelerator.wait_for_everyone() # 모든 process가 이 지점에 도달할 때까지 대기
                         if accelerator.is_local_main_process: # main process인 경우에만 모델 저장 (여러 process가 실행되지만 모델 저장은 한 번만 필요)
                             unwrapped_model = accelerator.unwrap_model(dual_encoder) # 모델 저장을 위한 전처리
@@ -410,4 +449,4 @@ def main():
     accelerator.end_training()
 
 if __name__ == '__main__':
-    main()
+    wandb.agent(project="knowledge-distillation", sweep_id="a7xzm9sa", function=train)
