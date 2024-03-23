@@ -18,7 +18,6 @@ accelerate launch train_kd.py
 #SBATCH --cpus-per-task=8
 
 srun accelerate launch doc2embedding_kd.py \
-    --encoding_batch_size 512 \
     --model_type spar \
     --output_dir embedding/spar
 ```
