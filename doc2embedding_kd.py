@@ -51,12 +51,6 @@ if __name__ == "__main__":
         lex_doc_encoder.eval()
         lex_doc_encoder.to(device)
 
-    elif args.model_type == 'dpr-nq-base':
-        tokenizer = DPRContextEncoderTokenizer.from_pretrained('facebook/dpr-ctx_encoder-single-nq-base')
-        doc_encoder = DPRContextEncoder.from_pretrained('facebook/dpr-ctx_encoder-single-nq-base')
-        doc_encoder.eval()
-        doc_encoder.to(device)
-
     else:
         tokenizer = BertTokenizer.from_pretrained(args.pretrained_model_path)
         doc_encoder = BertModel.from_pretrained(args.pretrained_model_path,add_pooling_layer=False)
