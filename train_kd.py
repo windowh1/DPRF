@@ -447,4 +447,4 @@ def train(config=None):
     accelerator.end_training()
 
 if __name__ == '__main__':
-    wandb.agent(project="knowledge-distillation", sweep_id="a7xzm9sa", function=train)
+    wandb.agent(project="knowledge-distillation", sweep_id="w1wt3akl", function=train) # a7xzm9sa
