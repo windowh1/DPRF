@@ -4,9 +4,9 @@ dev_file: downloads/data/retriever/nq-dev.json
 
 
 ## training
-lr: 1.0e-5
+lr: 0.00003512021659636297
 weight_decay: 0.1
-temperature: 5.0
+temperature: 6.189160333188381
 max_train_epochs: 40
 base_model: bert-base-uncased
 num_workers: 8
