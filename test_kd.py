@@ -34,19 +34,6 @@ def has_answer(answers,doc):
                     return True
     return False
 
-def calculate_rbo_ext(rbo_list, k, p=0.9):
-    rbo_ext = rbo_list[k-1] + (1-p) / p * sum(rbo_list[:k])
-    return rbo_ext
-
-def rbo_list(s, t, p=0.9):
-    list = []
-    for d in range(len(s)):
-        s_d = set(s[:d+1])
-        t_d = set(t[:d+1])
-        x_d = len(s_d.intersection(t_d))
-        list.append((p**(d+1)) * x_d / (d+1))
-    return list
-
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
@@ -58,7 +45,7 @@ if __name__ == '__main__':
     parser.add_argument("--pretrained_model_path",default=None)
     parser.add_argument("--doc_embedding_dir",default=None)
     parser.add_argument("--encoding_batch_size",type=int,default=32)
-    parser.add_argument("--num_shards",type=int,default=8)
+    parser.add_argument("--num_shards",type=int,default=36)
     parser.add_argument("--num_docs",type=int,default=21015324)
     args = parser.parse_args()
 
