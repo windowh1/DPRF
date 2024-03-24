@@ -23,12 +23,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--wikipedia_path",default="downloads/data/wikipedia_split/psgs_w100.tsv")
     parser.add_argument("--num_docs",type=int,default=21015324)
-    parser.add_argument("--encoding_batch_size",type=int,default=256)
+    parser.add_argument("--encoding_batch_size",type=int,default=128)
     parser.add_argument("--process_num",type=int,default=4)
     parser.add_argument("--shard_num_per_process",type=int,default=9)
     parser.add_argument("--concat_weight",type=float,default=0.7)
     parser.add_argument("--model_type",required=True)
-    parser.add_argument("--pretrained_model_path",default=None)
+    parser.add_argument("--pretrained_model_path", default=None)
     parser.add_argument("--output_dir",required=True)
     args = parser.parse_args()
     
@@ -41,6 +41,7 @@ if __name__ == "__main__":
 
     ## load encoder
     if args.model_type == 'spar':
+        print('spar')
         dpr_doc_tokenizer = DPRContextEncoderTokenizer.from_pretrained("facebook/dpr-ctx_encoder-multiset-base")
         dpr_doc_encoder = DPRContextEncoder.from_pretrained("facebook/dpr-ctx_encoder-multiset-base")
         dpr_doc_encoder.eval()
@@ -52,6 +53,7 @@ if __name__ == "__main__":
         lex_doc_encoder.to(device)
 
     else:
+        print('pretrained_dpr')
         tokenizer = BertTokenizer.from_pretrained(args.pretrained_model_path)
         doc_encoder = BertModel.from_pretrained(args.pretrained_model_path,add_pooling_layer=False)
         doc_encoder.eval()
@@ -75,11 +77,11 @@ if __name__ == "__main__":
                     progress_bar.update(1)
 
         with distributed_state.split_between_processes(wikipedia) as sharded_wikipedia:
-            
+                    
             sharded_wikipedia = [sharded_wikipedia[idx:idx+args.encoding_batch_size] for idx in range(0,len(sharded_wikipedia),args.encoding_batch_size)]
             encoding_progress_bar = tqdm(total=len(sharded_wikipedia), disable=not distributed_state.is_main_process,ncols=100,desc='encoding wikipedia...')
             doc_embeddings = []
-            
+                    
             for data in sharded_wikipedia:
                 title = [x[0] for x in data]
                 passage = [x[1] for x in data]            
@@ -94,10 +96,10 @@ if __name__ == "__main__":
                     else:
                         model_input = tokenizer(title,passage,max_length=256,padding='max_length',return_tensors='pt',truncation=True).to(device)
                         if isinstance(doc_encoder,BertModel):
-                            output = doc_encoder(**model_input).last_hidden_state[:,CLS_POS,:].cpu().numpy()
+                            output = doc_encoder(**model_input).last_hidden_state[:,CLS_POS,:]
                         else:
-                            output = doc_encoder(**model_input).pooler_output.cpu().numpy()
-                doc_embeddings.append(output)
+                            output = doc_encoder(**model_input).pooler_output
+                doc_embeddings.append(output.cpu().numpy())
                 encoding_progress_bar.update(1)
             doc_embeddings = np.concatenate(doc_embeddings,axis=0)
             os.makedirs(args.output_dir,exist_ok=True)
