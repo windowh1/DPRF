@@ -1,6 +1,7 @@
 from utils import normalize_query
+import torch
 import csv
-import faiss,pickle
+import faiss
 import json        
 import numpy as np 
 from tqdm import tqdm
@@ -19,6 +20,7 @@ import time
 import transformers
 transformers.logging.set_verbosity_error()
 import wandb
+import pickle
 
 def normalize(text):
     return unicodedata.normalize("NFD", text)
@@ -71,12 +73,12 @@ if __name__ == '__main__':
         hit_lists = []
         I = []
         for i, query in enumerate(queries):
+            answer = answers[i]
             hit_list = []
             id_list = []
-            answer = answers[i]
             search_results = searcher.search(query, args.top_k)
             for j in range(args.top_k):
-                id_list.append(search_results[j].docid)
+                id_list.append(int(search_results[j].docid) - 1) # faiss에서 불러오는 docid와 1씩 차이남
                 title_contents = search_results[j].lucene_document
                 raw = title_contents.get('raw')
                 json_data = json.loads(raw)
@@ -125,11 +127,14 @@ if __name__ == '__main__':
         ## embed queries
         CLS_POS = 0
         query_embeddings = []
+        i = 0
         for query in tqdm(queries,desc='encoding queries...'):
             with torch.no_grad():
                 if args.model_type == 'spar':
-                    dpr_query_embedding = dpr_query_encoder(**dpr_query_tokenizer(query,max_length=256,truncation=True,padding='max_length',return_tensors='pt').to(device)).pooler_output
-                    lex_query_embedding = lex_query_encoder(**lex_tokenizer(query,max_length=256,truncation=True,padding='max_length',return_tensors='pt').to(device)).last_hidden_state[:,CLS_POS,:]
+                    dpr_query_embedding = dpr_query_encoder(**dpr_query_tokenizer(query,max_length=256,truncation=True,padding='max_length',return_tensors='pt').to(device))
+                    dpr_query_embedding = dpr_query_embedding.pooler_output
+                    lex_query_embedding = lex_query_encoder(**lex_tokenizer(query,max_length=256,truncation=True,padding='max_length',return_tensors='pt').to(device))
+                    lex_query_embedding.last_hidden_state[:,CLS_POS,:]
                     query_embedding = torch.cat([dpr_query_embedding, lex_query_embedding], dim=1)
                 else:
                     query_embedding = query_encoder(**tokenizer(query,max_length=256,truncation=True,padding='max_length',return_tensors='pt').to(device))
@@ -138,23 +143,28 @@ if __name__ == '__main__':
                     else:
                         query_embedding = query_embedding.last_hidden_state[:,CLS_POS,:]
             query_embeddings.append(query_embedding.cpu().detach().numpy())
-        query_embeddings = np.concatenate(query_embeddings,axis=0)
+        query_embeddings = np.concatenate(query_embeddings,axis=0) # (bs, embedding_dimension)
 
         ## retrieve top-k documents
-        print("searching index ",end=' ')
+        print("searching index",end=' ')
         start_time = time.time()
         _,I = index.search(query_embeddings,args.top_k)
         print(f"takes {time.time()-start_time} s")
         wandb.log({"search_duration": time.time()-start_time})
 
         hit_lists = []
+        i = 0
         for answer_list,id_list in tqdm(zip(answers,I),total=len(answers),desc='calculating metrics...'):
             ## process single query
             hit_list = []
             for doc_id in id_list:
                 doc = wiki_passages[doc_id]
+                if doc_id == 14087661:
+                    print(doc)
                 hit_list.append(has_answer(answer_list,doc))
             hit_lists.append(hit_list)
+
+        I = I.tolist()
 
     out_file = "retrieval/"+args.model_type+".pickle"
     with open(file=out_file, mode='wb') as f:
@@ -167,12 +177,13 @@ if __name__ == '__main__':
         if best_hit is not None:
             top_k_hits[best_hit:] = [v + 1 for v in top_k_hits[best_hit:]]
     
-    top_k_ratio = [x/len(answers) for x in top_k_hits] # top_x 안에 answer이 있는 qa의 ratio
+    top_k_ratio = [x/len(answers) for x in top_k_hits] # top_x 안에 answer이 있는 qa의 ratio # len(answers) = 3610
     
     for idx in range(args.top_k):
-        if (idx+1) % 10 == 0:
+        if (idx+1) in [5, 20, 100]:
             print(f"top-{idx+1} accuracy",top_k_ratio[idx])
-            wandb.log({(f"top-{idx+1} accuracy",top_k_ratio[idx]): top_k_ratio[idx]})
+            title = "top-"+str(idx+1)+" accuracy"
+            wandb.log({title: top_k_ratio[idx]})
             
 
     wandb.finish()

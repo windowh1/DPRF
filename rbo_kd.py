@@ -12,9 +12,9 @@ def rbo_list(s, t, p=0.9):
         list.append((p**(d+1)) * x_d / (d+1))
     return list
 
-def rbo_list_matrix(rank_list, p=0.9):
+def rbo_list_matrix(rank_list, args, p=0.9):
     n = len(rank_list)
-    matrix = [[None for _ in range(n)] for _ in range(n)]
+    matrix = [[[0.0] * args.top_k for _ in range(n)] for _ in range(n)]
 
     for i, rank1 in enumerate(rank_list):
         for j, rank2 in enumerate(rank_list):
@@ -31,7 +31,7 @@ def calculate_rbo_ext(rbo_list, k, p=0.9):
 
 def rbo_ext_matrix(rbo_list_matrix, k, p=0.9):
     n = len(rbo_list_matrix)
-    matrix = [[None for _ in range(n)] for _ in range(n)]
+    matrix = [[0.0 for _ in range(n)] for _ in range(n)]
 
     for i in range(n):
         for j in range(n):
@@ -46,7 +46,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--bm25_rank",default="retrieval/bm25.pickle")
-    parser.add_argument("--dpr_rank",default="retrieval/dpr.pickle")
+    parser.add_argument("--dpr_rank",default="retrieval/nanoDPR.pickle")
     parser.add_argument("--spar_rank",default="retrieval/spar.pickle")
     parser.add_argument("--kd_rank",default="retrieval/kd.pickle")
 
@@ -54,37 +54,43 @@ if __name__ == '__main__':
     wandb.init(project="knowledge-distillation", job_type="Inference",name="rbo-calculate")
 
     with open(args.bm25_rank, 'rb') as f:
-        bm25_rank = pickle.load(f)
+        bm25_ranks = pickle.load(f)
 
     with open(args.dpr_rank, 'rb') as f:
-        dpr_rank = pickle.load(f)
+        dpr_ranks = pickle.load(f)
 
     with open(args.spar_rank, 'rb') as f:
-        spar_rank = pickle.load(f)
+        spar_ranks = pickle.load(f)
 
     with open(args.kd_rank, 'rb') as f:
-        kd_rank = pickle.load(f)
+        kd_ranks = pickle.load(f)
 
-    rank_list = [bm25_rank, dpr_rank, spar_rank, kd_rank]
     rank_title = ["BM25", "DPR", "SPAR", "KD"]
+    rbo_matrixs_top5 = []
+    rbo_matrixs_top20 = []
+    rbo_matrixs_top100 = []
 
-    rbo_list_matrix = rbo_list_matrix(rank_list)
+    for bm25_rank, dpr_rank, spar_rank, kd_rank in zip(bm25_ranks, dpr_ranks, spar_ranks, kd_ranks):        
+        rbo_matrix = rbo_list_matrix([bm25_rank, dpr_rank, spar_rank, kd_rank], args)
+        rbo_matrixs_top5.append(np.array(rbo_ext_matrix(rbo_matrix, k=5)))
+        rbo_matrixs_top20.append(np.array(rbo_ext_matrix(rbo_matrix, k=20)))
+        rbo_matrixs_top100.append(np.array(rbo_ext_matrix(rbo_matrix, k=100)))
 
-    rbo_ext_matrix_top5 = np.array(rbo_ext_matrix(rbo_list_matrix, k=5))
-    rbo_ext_matrix_top20 = np.array(rbo_ext_matrix(rbo_list_matrix, k=20))
-    rbo_ext_matrix_top100 = np.array(rbo_ext_matrix(rbo_list_matrix, k=100))
+    avg_rbo_top5 = np.array(rbo_matrixs_top5).mean(axis=0)
+    avg_rbo_top20 = np.array(rbo_matrixs_top20).mean(axis=0)
+    avg_rbo_top100 = np.array(rbo_matrixs_top100).mean(axis=0)
 
-    rbo_ext_top5 = wandb.Table(pd.Dataframe(data = rbo_ext_matrix_top5,
+    rbo_ext_top5 = wandb.Table(pd.Dataframe(data = avg_rbo_top5,
                                             columns=rank_title,
                                             index=rank_title))   
     wandb.log({"rbd_ext: top-5", rbo_ext_top5})
 
-    rbo_ext_top20 = wandb.Table(pd.Dataframe(data = rbo_ext_matrix_top20,
+    rbo_ext_top20 = wandb.Table(pd.Dataframe(data = avg_rbo_top20,
                                              columns=rank_title,
                                              index=rank_title))    
     wandb.log({"rbo_ext: top-20", rbo_ext_top20})
 
-    rbo_ext_top100 = wandb.Table(pd.Dataframe(data = rbo_ext_matrix_top100,
+    rbo_ext_top100 = wandb.Table(pd.Dataframe(data = avg_rbo_top100,
                                               columns=rank_title,
                                               index=rank_title))    
     wandb.log({"rbo_ext: top-100", rbo_ext_top100})
