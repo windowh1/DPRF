@@ -59,17 +59,17 @@ if __name__ == "__main__":
         doc_encoder.eval()
         doc_encoder.to(device)
 
-    shard_num = args.process_num * args.shard_num_per_process
-    num_docs_per_shard = int(args.num_docs/shard_num)
+    shard_num = args.process_num * args.shard_num_per_process # 4 * 9 = 36
+    num_docs_per_batch = int(args.num_docs/args.shard_num_per_process) # 21015324 / 9    
     for i in range(args.shard_num_per_process):
         ## load wikipedia passages
-        progress_bar = tqdm(total=num_docs_per_shard, disable=not distributed_state.is_main_process,ncols=100,desc='loading wikipedia...(' + str(i+1) + '/2)')
+        progress_bar = tqdm(total=num_docs_per_batch, disable=not distributed_state.is_main_process,ncols=100,desc='loading wikipedia...(' + str(i+1) + '/2)')
         id_col,text_col,title_col=0,1,2
         wikipedia = []
         with open(args.wikipedia_path) as f:
             reader = csv.reader(f, delimiter="\t")
             for j, row in enumerate(reader):
-                if j in range(i * int(num_docs_per_shard), (i+1) * num_docs_per_shard):
+                if j in range(i * int(num_docs_per_batch), (i+1) * num_docs_per_batch):
                     if row[id_col] == "id":continue
                     wikipedia.append(
                         [row[title_col],row[text_col].strip('"')]
