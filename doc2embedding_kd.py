@@ -61,9 +61,9 @@ if __name__ == "__main__":
 
     shard_num = args.process_num * args.shard_num_per_process # 4 * 9 = 36
     num_docs_per_batch = int(args.num_docs/args.shard_num_per_process) # 21015324 / 9    
-    for i in range(args.shard_num_per_process):
+    for i in range(3,args.shard_num_per_process):
         ## load wikipedia passages
-        progress_bar = tqdm(total=num_docs_per_batch, disable=not distributed_state.is_main_process,ncols=100,desc='loading wikipedia...(' + str(i+1) + '/2)')
+        progress_bar = tqdm(total=num_docs_per_batch, disable=not distributed_state.is_main_process,ncols=100,desc='loading wikipedia...('+str(i+1)+'/'+str(args.shard_num_per_process)+')')
         id_col,text_col,title_col=0,1,2
         wikipedia = []
         with open(args.wikipedia_path) as f:
@@ -79,7 +79,7 @@ if __name__ == "__main__":
         with distributed_state.split_between_processes(wikipedia) as sharded_wikipedia:
                     
             sharded_wikipedia = [sharded_wikipedia[idx:idx+args.encoding_batch_size] for idx in range(0,len(sharded_wikipedia),args.encoding_batch_size)]
-            encoding_progress_bar = tqdm(total=len(sharded_wikipedia), disable=not distributed_state.is_main_process,ncols=100,desc='encoding wikipedia...')
+            encoding_progress_bar = tqdm(total=len(sharded_wikipedia), disable=not distributed_state.is_main_process,ncols=100,desc='encoding wikipedia...('+str(i+1)+'/'+str(args.shard_num_per_process)+')')
             doc_embeddings = []
                     
             for data in sharded_wikipedia:
@@ -103,7 +103,7 @@ if __name__ == "__main__":
                 encoding_progress_bar.update(1)
             doc_embeddings = np.concatenate(doc_embeddings,axis=0)
             os.makedirs(args.output_dir,exist_ok=True)
-            np.save(f'{args.output_dir}/wikipedia_shard_{i*4+distributed_state.process_index}.npy',doc_embeddings)
+            np.save(f'{args.output_dir}/wikipedia_shard_{i*args.process_num+distributed_state.process_index}.npy',doc_embeddings)
 
     
     if distributed_state.is_main_process:
