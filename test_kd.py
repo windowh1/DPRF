@@ -159,7 +159,7 @@ if __name__ == '__main__':
             hit_list = []
             for doc_id in id_list:
                 doc = wiki_passages[doc_id]
-                if doc_id == 284490:
+                if doc_id == 14087661:
                     print(doc)
                 hit_list.append(has_answer(answer_list,doc))
             hit_lists.append(hit_list)
