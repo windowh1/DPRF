@@ -61,7 +61,7 @@ if __name__ == "__main__":
 
     shard_num = args.process_num * args.shard_num_per_process # 4 * 9 = 36
     num_docs_per_batch = int(args.num_docs/args.shard_num_per_process) # 21015324 / 9    
-    for i in range(3,args.shard_num_per_process):
+    for i in range(args.shard_num_per_process):
         ## load wikipedia passages
         progress_bar = tqdm(total=num_docs_per_batch, disable=not distributed_state.is_main_process,ncols=100,desc='loading wikipedia...('+str(i+1)+'/'+str(args.shard_num_per_process)+')')
         id_col,text_col,title_col=0,1,2
