@@ -134,7 +134,7 @@ if __name__ == '__main__':
                     dpr_query_embedding = dpr_query_encoder(**dpr_query_tokenizer(query,max_length=256,truncation=True,padding='max_length',return_tensors='pt').to(device))
                     dpr_query_embedding = dpr_query_embedding.pooler_output
                     lex_query_embedding = lex_query_encoder(**lex_tokenizer(query,max_length=256,truncation=True,padding='max_length',return_tensors='pt').to(device))
-                    lex_query_embedding.last_hidden_state[:,CLS_POS,:]
+                    lex_query_embedding = lex_query_embedding.last_hidden_state[:,CLS_POS,:]
                     query_embedding = torch.cat([dpr_query_embedding, lex_query_embedding], dim=1)
                 else:
                     query_embedding = query_encoder(**tokenizer(query,max_length=256,truncation=True,padding='max_length',return_tensors='pt').to(device))
@@ -159,7 +159,7 @@ if __name__ == '__main__':
             hit_list = []
             for doc_id in id_list:
                 doc = wiki_passages[doc_id]
-                if doc_id == 14087661:
+                if doc_id == 284490:
                     print(doc)
                 hit_list.append(has_answer(answer_list,doc))
             hit_lists.append(hit_list)
